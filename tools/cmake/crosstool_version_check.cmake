@@ -29,7 +29,9 @@ function(crosstool_version_check expected_ctng_version)
             "crosstool-ng version ${ctng_version} doesn't match supported version ${expected_ctng_version}"
             "\nPlease try to run 'idf.py fullclean' to solve it quickly.\n")
         set(IDF_MAINTAINER $ENV{IDF_MAINTAINER})
-        if(IDF_MAINTAINER)
+        ### if(IDF_MAINTAINER)
+        ### CircuitPython: Temporary change to allow different toolchain versions for different architectures
+        if (TRUE)
             message(WARNING ${wrong_compiler_msg} ${ctng_version_warning})
         else()
             set(ctng_version_error "Check Getting Started documentation if the error continues."
