@@ -381,6 +381,15 @@ size_t esp_psram_get_size(void)
     return (size_t)available_size;
 }
 
+uint8_t* esp_psram_get_address(void)
+{
+    if (!s_psram_ctx.is_initialised) {
+        return NULL;
+    }
+
+    return s_psram_ctx.mapped_regions[PSRAM_MEM_8BIT_ALIGNED].vaddr_start;
+}
+
 uint8_t esp_psram_io_get_cs_io(void)
 {
     return esp_psram_impl_get_cs_io();
