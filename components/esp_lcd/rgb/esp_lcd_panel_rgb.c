@@ -154,7 +154,7 @@ static esp_err_t lcd_rgb_panel_alloc_frame_buffers(const esp_lcd_rgb_panel_confi
     if (rgb_panel->num_fbs > 0) {
         // fb_in_psram is only an option, if there's no PSRAM on board, we fallback to alloc from SRAM
         if (rgb_panel_config->flags.fb_in_psram) {
-#if CONFIG_SPIRAM_USE_MALLOC || CONFIG_SPIRAM_USE_CAPS_ALLOC
+#if CONFIG_SPIRAM
             if (esp_psram_is_initialized()) {
                 fb_in_psram = true;
             }
