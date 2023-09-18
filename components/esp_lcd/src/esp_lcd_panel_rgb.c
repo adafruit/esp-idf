@@ -301,8 +301,7 @@ esp_err_t esp_lcd_new_rgb_panel(const esp_lcd_rgb_panel_config_t *rgb_panel_conf
     }
 
     // allocate frame buffers + bounce buffers
-    ret = lcd_rgb_panel_alloc_frame_buffers(rgb_panel_config, rgb_panel);
-    ESP_GOTO_ON_ERROR(ret, err, TAG, "alloc frame buffers failed");
+    ESP_GOTO_ON_ERROR(lcd_rgb_panel_alloc_frame_buffers(rgb_panel_config, rgb_panel), err, TAG, "alloc frame buffers failed");
 
     // initialize HAL layer, so we can call LL APIs later
     lcd_hal_init(&rgb_panel->hal, panel_id);
