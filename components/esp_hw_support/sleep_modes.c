@@ -147,7 +147,11 @@
 
 #if SOC_PM_SUPPORT_TOP_PD
 // IDF console uses 8 bits data mode without parity, so each char occupy 8(data)+1(start)+1(stop)=10bits
+#ifdef CONFIG_ESP_CONSOLE_UART_NONE
+#define UART_FLUSH_US_PER_CHAR              (0)
+#else
 #define UART_FLUSH_US_PER_CHAR              (10*1000*1000 / CONFIG_ESP_CONSOLE_UART_BAUDRATE)
+#endif
 #define CONCATENATE_HELPER(x, y)            (x##y)
 #define CONCATENATE(x, y)                   CONCATENATE_HELPER(x, y)
 #define CONSOLE_UART_DEV                    (&CONCATENATE(UART, CONFIG_ESP_CONSOLE_UART_NUM))
