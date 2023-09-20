@@ -232,6 +232,21 @@
 
 // Actually costs 80us, using the fastest slow clock 150K calculation takes about 16 ticks
 #define SLEEP_TIMER_ALARM_TO_SLEEP_TICKS    (16)
+
+#define SLEEP_UART_FLUSH_DONE_TO_SLEEP_US   (450)
+
+#if SOC_PM_SUPPORT_TOP_PD
+// IDF console uses 8 bits data mode without parity, so each char occupy 8(data)+1(start)+1(stop)=10bits
+#ifdef CONFIG_ESP_CONSOLE_UART_NONE
+#define UART_FLUSH_US_PER_CHAR              (0)
+#else
+#define UART_FLUSH_US_PER_CHAR              (10*1000*1000 / CONFIG_ESP_CONSOLE_UART_BAUDRATE)
+#endif
+#define CONCATENATE_HELPER(x, y)            (x##y)
+#define CONCATENATE(x, y)                   CONCATENATE_HELPER(x, y)
+#define CONSOLE_UART_DEV                    (&CONCATENATE(UART, CONFIG_ESP_CONSOLE_UART_NUM))
+#endif
+
 #define LIGHT_SLEEP_TIME_OVERHEAD_US        DEFAULT_HARDWARE_OUT_OVERHEAD_US
 #ifdef CONFIG_ESP_SYSTEM_RTC_EXT_XTAL
 #define DEEP_SLEEP_TIME_OVERHEAD_US         (650 + 100 * 240 / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)
