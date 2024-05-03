@@ -89,7 +89,7 @@
 
 [submodule "components/bt/host/nimble/nimble"]
 	path = components/bt/host/nimble/nimble
-	url = ../../espressif/esp-nimble.git
+	url = ../../adafruit/esp-nimble.git
 
 [submodule "components/esp_wifi/lib"]
 	path = components/esp_wifi/lib
