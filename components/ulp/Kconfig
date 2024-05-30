@@ -11,9 +11,15 @@ menu "Ultra Low Power (ULP) Co-processor"
     config ULP_COPROC_TYPE_FSM
         bool "Enable ULP FSM (Finite State Machine)"
         depends on (SOC_ULP_FSM_SUPPORTED && ULP_COPROC_ENABLED)
+        help
+            Note: On devices with both ULP FSM and ULP RISC-V, both ULPs can be enabled simultaneously at compile-time, 
+            but may not be used simultaneously at run-time. 
     config ULP_COPROC_TYPE_RISCV
         bool "Enable ULP RISC-V"
         depends on (SOC_RISCV_COPROC_SUPPORTED && ULP_COPROC_ENABLED)
+        help
+            Note: On devices with both ULP FSM and ULP RISC-V, both ULPs can be enabled simultaneously at compile-time, 
+            but may not be used simultaneously at run-time. 
     config ULP_COPROC_TYPE_LP_CORE
         bool "Enable LP core RISC-V"
         depends on (SOC_LP_CORE_SUPPORTED && ULP_COPROC_ENABLED)
