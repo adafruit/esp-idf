@@ -42,7 +42,9 @@ if(CONFIG_ULP_COPROC_TYPE_FSM OR CONFIG_ULP_COPROC_TYPE_RISCV)
             "ulp_fsm/ulp.c"
             "ulp_fsm/ulp_macro.c")
 
-    elseif(CONFIG_ULP_COPROC_TYPE_RISCV)
+    endif()
+
+    if(CONFIG_ULP_COPROC_TYPE_RISCV)
         list(APPEND srcs
             "ulp_riscv/ulp_riscv.c"
             "ulp_riscv/ulp_riscv_lock.c"
