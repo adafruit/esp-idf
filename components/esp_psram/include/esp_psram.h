@@ -60,6 +60,13 @@ size_t esp_psram_get_size(void);
  */
 bool esp_psram_ptr_is_no_enc(const void *p);
 
+/**
+ * @brief Get the memory mapped address of the attached PSRAM chip
+ *
+ * @return Pointer to the start of PSRAM memory, or NULL if PSRAM isn't successfully initialized
+ */
+uint8_t* esp_psram_get_address(void);
+
 #ifdef __cplusplus
 }
 #endif
