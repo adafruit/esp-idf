@@ -3,6 +3,8 @@ choice ESPTOOLPY_FLASHFREQ
     default ESPTOOLPY_FLASHFREQ_64M
     config ESPTOOLPY_FLASHFREQ_64M
         bool "64 MHz"
+    config ESPTOOLPY_FLASHFREQ_48M
+        bool "48 MHz"
     config ESPTOOLPY_FLASHFREQ_32M
         bool "32 MHz"
     config ESPTOOLPY_FLASHFREQ_16M
