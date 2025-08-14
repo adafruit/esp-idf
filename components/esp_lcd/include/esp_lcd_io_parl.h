@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#if SOC_PARLIO_SUPPORTED
+#ifdef SOC_PARLIO_SUPPORTED
 /**
  * @brief Parallel Panel IO configuration structure, for intel 8080 interface(8 data-lines) or SPI interface(1 data-lines)
  */
