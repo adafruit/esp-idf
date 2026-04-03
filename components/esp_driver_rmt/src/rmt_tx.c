@@ -582,8 +582,9 @@ esp_err_t rmt_tx_wait_all_done(rmt_channel_handle_t channel, int timeout_ms)
     rmt_tx_trans_desc_t *t = NULL;
     size_t num_trans_inflight = tx_chan->num_trans_inflight;
     for (size_t i = 0; i < num_trans_inflight; i++) {
-        ESP_RETURN_ON_FALSE(xQueueReceive(tx_chan->trans_queues[RMT_TX_QUEUE_COMPLETE], &t, wait_ticks) == pdTRUE,
-                            ESP_ERR_TIMEOUT, TAG, "flush timeout");
+        if (xQueueReceive(tx_chan->trans_queues[RMT_TX_QUEUE_COMPLETE], &t, wait_ticks) != pdTRUE) {
+            return ESP_ERR_TIMEOUT;
+        }
         ESP_RETURN_ON_FALSE(xQueueSend(tx_chan->trans_queues[RMT_TX_QUEUE_READY], &t, 0) == pdTRUE,
                             ESP_ERR_INVALID_STATE, TAG, "ready queue full");
         tx_chan->num_trans_inflight--;
