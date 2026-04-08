@@ -134,6 +134,12 @@ static void set_defaults(usb_dwc_hal_context_t *hal)
         usb_dwc_ll_gusbcfg_set_timeout_cal(hal->dev, 5); // 5 PHY clocks for our HS PHY
         usb_dwc_ll_gusbcfg_set_utmi_phy(hal->dev);
     }
+#ifdef USB_DWC_FSLS_ONLY
+    // Force Full-Speed/Low-Speed only mode. This prevents HS negotiation during port
+    // reset, so HS hubs operate at FS. This avoids the need for split transactions
+    // (TT), which are not supported in Scatter/Gather DMA (DDMA) mode.
+    usb_dwc_ll_hcfg_set_fsls_supp_only(hal->dev);
+#endif
     //Enable interruts
     usb_dwc_ll_gintmsk_dis_intrs(hal->dev, 0xFFFFFFFF);     //Mask all interrupts first
     usb_dwc_ll_gintmsk_en_intrs(hal->dev, CORE_INTRS_EN_MSK);   //Unmask global interrupts
@@ -275,11 +281,22 @@ void usb_dwc_hal_port_enable(usb_dwc_hal_context_t *hal)
     usb_dwc_ll_hcfg_en_scatt_gatt_dma(hal->dev); // Enable Scatther-Gather DMA mode
     usb_dwc_ll_hcfg_dis_perio_sched(hal->dev);   // Disable Periodic Scheduler (for now)
 
-    // Configure PHY clock: Only for USB-DWC with FSLS PHY
+    // Configure PHY clock: Required for FSLS-only PHY, and also when a HS PHY
+    // is forced to FS-only mode (USB_DWC_FSLS_ONLY)
     if (hal->constant_config.hsphy_type == 0) {
         usb_dwc_ll_hcfg_set_fsls_phy_clock(hal->dev);
         usb_dwc_ll_hfir_set_frame_interval(hal->dev);
     }
+#ifdef USB_DWC_FSLS_ONLY
+    else {
+        // HS PHY (UTMI) forced to FS mode: keep the UTMI clock settings.
+        // Do NOT call usb_dwc_ll_hcfg_set_fsls_phy_clock() here - that sets
+        // fslspclksel=1 (48 MHz) which is wrong for the UTMI PHY that runs
+        // at 30 MHz (16-bit) or 60 MHz (8-bit). The DWC derives FS timing
+        // from the actual PHY clock; misconfiguring fslspclksel produces
+        // incorrect bit rates and SOF timing, causing devices to not respond.
+    }
+#endif
 }
 
 // ----------------------------------------------------- Channel -------------------------------------------------------
