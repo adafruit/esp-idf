@@ -76,6 +76,9 @@ typedef struct parlio_rx_unit_t {
     /* Unaligned DMA buffer management */
     uint8_t                         *stash_buf[2];          /*!< The ping-pong stash buffer for unaligned DMA buffer */
     uint8_t                         stash_buf_idx;         /*!< The index of the current stash buffer */
+    /* Pre-allocated mount config array (avoids VLA on stack) */
+    gdma_buffer_mount_config_t      *mount_config;          /*!< Pre-allocated buffer mount config array */
+    size_t                          mount_config_num;       /*!< Number of entries in mount_config */
 
     /* Callback */
     parlio_rx_event_callbacks_t     cbs;                    /*!< The group of callback function pointers */
@@ -146,7 +149,8 @@ size_t parlio_rx_mount_transaction_buffer(parlio_rx_unit_handle_t rx_unit, parli
     }
     rx_unit->node_num = required_node_num;
 
-    gdma_buffer_mount_config_t mount_config[required_node_num] = {};
+    gdma_buffer_mount_config_t *mount_config = rx_unit->mount_config;
+    memset(mount_config, 0, required_node_num * sizeof(gdma_buffer_mount_config_t));
     /* Mount head buffer */
     if (head_node_num) {
         mount_config[0].buffer = trans->aligned_payload.buf.head.aligned_buffer;
@@ -436,6 +440,12 @@ static esp_err_t parlio_rx_create_dma_link(parlio_rx_unit_handle_t rx_unit, uint
     // create DMA link list, throw the error to the caller if failed
     ESP_RETURN_ON_ERROR(gdma_new_link_list(&dma_link_config, &rx_unit->dma_link), TAG, "create DMA link list failed");
 
+    // Pre-allocate the mount config array so that parlio_rx_mount_transaction_buffer
+    // does not need a VLA, which can overflow the stack when tot_node_num is large.
+    rx_unit->mount_config = heap_caps_calloc(tot_node_num, sizeof(gdma_buffer_mount_config_t), PARLIO_MEM_ALLOC_CAPS);
+    ESP_RETURN_ON_FALSE(rx_unit->mount_config, ESP_ERR_NO_MEM, TAG, "no memory for mount config");
+    rx_unit->mount_config_num = tot_node_num;
+
     rx_unit->max_recv_size = max_recv_size;
     return ret;
 }
@@ -580,6 +590,11 @@ static esp_err_t parlio_destroy_rx_unit(parlio_rx_unit_handle_t rx_unit)
     /* Free the internal DMA buffer */
     if (rx_unit->dma_buf) {
         free(rx_unit->dma_buf);
+    }
+    /* Free the mount config array */
+    if (rx_unit->mount_config) {
+        free(rx_unit->mount_config);
+        rx_unit->mount_config = NULL;
     }
     /* Free the stash buffer */
     for (uint8_t i = 0; i < 2; i++) {
