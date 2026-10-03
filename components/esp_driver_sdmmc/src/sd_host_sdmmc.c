@@ -788,6 +788,8 @@ static esp_err_t sd_host_declaim_controller(sd_host_sdmmc_ctlr_t *controller)
 static void sd_host_isr(void *arg)
 {
     sd_host_sdmmc_ctlr_t *ctlr = (sd_host_sdmmc_ctlr_t *)arg;
+    // Slot removal may race a late DMA or SDIO interrupt.
+    portENTER_CRITICAL_ISR(&ctlr->spinlock);
     sd_host_sdmmc_slot_t *slot = ctlr->slot[ctlr->cur_slot_id];
 
     sd_host_sdmmc_event_t event = {};
@@ -803,7 +805,7 @@ static void sd_host_isr(void *arg)
 
     if (dma_pending & SDMMC_LL_EVENT_DMA_NI) {
         // refill DMA descriptors
-        size_t free_desc = sd_host_get_free_descriptors_count(slot);
+        size_t free_desc = slot ? sd_host_get_free_descriptors_count(slot) : 0;
         if (free_desc > 0) {
             sd_host_fill_dma_descriptors(slot, free_desc);
             sd_host_dma_resume(slot);
@@ -813,7 +815,7 @@ static void sd_host_isr(void *arg)
     }
     event.dma_status = dma_pending & SDMMC_LL_EVENT_DMA_MASK;
 
-    if (pending != 0 || dma_pending != 0) {
+    if (slot && (pending != 0 || dma_pending != 0)) {
         xQueueSendFromISR(ctlr->event_queue, &event, &higher_priority_task_awoken);
         if (slot->cbs.on_trans_done) {
             sd_host_evt_data_t edata = {};
@@ -828,14 +830,18 @@ static void sd_host_isr(void *arg)
         // disable the interrupt (no need to clear here, this is done in sdmmc_host_io_int_wait)
         sdmmc_ll_enable_interrupt(ctlr->hal.dev, sdio_pending, false);
         xSemaphoreGiveFromISR(ctlr->io_intr_sem, &higher_priority_task_awoken);
-        if (slot->cbs.on_io_interrupt) {
-            sd_host_evt_data_t edata = {};
-            if (slot->cbs.on_io_interrupt(&slot->drv, &edata, slot->user_data)) {
-                need_yield |= true;
+        for (int i = 0; i < SOC_SDMMC_NUM_SLOTS; i++) {
+            sd_host_sdmmc_slot_t *io_slot = ctlr->slot[i];
+            if ((sdio_pending & (SDMMC_INTMASK_IO_SLOT0 << i)) && io_slot && io_slot->cbs.on_io_interrupt) {
+                sd_host_evt_data_t edata = {};
+                if (io_slot->cbs.on_io_interrupt(&io_slot->drv, &edata, io_slot->user_data)) {
+                    need_yield |= true;
+                }
             }
         }
     }
 
+    portEXIT_CRITICAL_ISR(&ctlr->spinlock);
     need_yield |= higher_priority_task_awoken == pdTRUE;
     if (need_yield) {
         portYIELD_FROM_ISR();
