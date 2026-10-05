@@ -77,6 +77,9 @@ esp_err_t sd_host_create_sdmmc_controller(const sd_host_sdmmc_cfg_t *config, sd_
     sd_host_sdmmc_ctlr_t *ctlr = heap_caps_calloc(1, sizeof(sd_host_sdmmc_ctlr_t), SD_HOST_SDMMC_MEM_ALLOC_CAPS);
     ESP_RETURN_ON_FALSE(ctlr, ESP_ERR_NO_MEM, TAG, "no mem for sd host controller context");
 
+    // The ISR and error cleanup can use the lock before initialization completes.
+    ctlr->spinlock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
+
     ret = sd_host_claim_controller(ctlr);
     if (ret != ESP_OK) {
         //claim fail, clean and return directly
@@ -124,7 +127,6 @@ esp_err_t sd_host_create_sdmmc_controller(const sd_host_sdmmc_cfg_t *config, sd_
     sdmmc_ll_enable_global_interrupt(ctlr->hal.dev, true);
     sdmmc_ll_init_dma(ctlr->hal.dev);
 
-    ctlr->spinlock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
     ctlr->drv.del_ctlr = sd_host_del_sdmmc_controller;
     *ret_handle = &ctlr->drv;
 

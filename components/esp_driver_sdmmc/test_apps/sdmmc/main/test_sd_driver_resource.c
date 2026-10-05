@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2025 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2025-2026 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -8,6 +8,7 @@
 #include "unity.h"
 #include "driver/sd_host_sdmmc.h"
 #include "driver/sd_host.h"
+#include "driver/sdmmc_host.h"
 #include "hal/sdmmc_ll.h"
 #include "soc/sdmmc_pins.h"
 
@@ -117,4 +118,56 @@ TEST_CASE("SDMMC slot exhausted allocation", "[sdmmc]")
 #endif
     TEST_ESP_OK(sd_host_remove_slot(slot[1]));
     TEST_ESP_OK(sd_host_del_controller(ctlr));
+}
+
+TEST_CASE("legacy SDMMC host repeated initialization", "[sdmmc]")
+{
+    for (int i = 0; i < 3; i++) {
+        TEST_ESP_OK(sdmmc_host_init());
+        TEST_ESP_OK(sdmmc_host_init());
+        TEST_ESP_OK(sdmmc_host_deinit());
+    }
+}
+
+TEST_CASE("legacy SDMMC host independent slot teardown", "[sdmmc]")
+{
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = 1;
+
+    // Repeat to check that removing the last slot clears the controller handle.
+    for (int i = 0; i < 3; i++) {
+        TEST_ESP_OK(sdmmc_host_init());
+#if !CONFIG_IDF_TARGET_ESP32
+        // Slot 0 on ESP32 overlaps the default SPI flash pins.
+        slot_config.clk = SDMMC_SLOT0_CLK;
+        slot_config.cmd = SDMMC_SLOT0_CMD;
+        slot_config.d0 = SDMMC_SLOT0_D0;
+        TEST_ESP_OK(sdmmc_host_init_slot(SDMMC_HOST_SLOT_0, &slot_config));
+#endif
+        TEST_ESP_OK(sdmmc_host_init());
+        slot_config.clk = SDMMC_SLOT1_CLK;
+        slot_config.cmd = SDMMC_SLOT1_CMD;
+        slot_config.d0 = SDMMC_SLOT1_D0;
+        TEST_ESP_OK(sdmmc_host_init_slot(SDMMC_HOST_SLOT_1, &slot_config));
+
+#if !CONFIG_IDF_TARGET_ESP32
+        TEST_ESP_OK(sdmmc_host_deinit_slot(SDMMC_HOST_SLOT_0));
+        TEST_ESP_OK(sdmmc_host_set_card_clk(SDMMC_HOST_SLOT_1, SDMMC_FREQ_PROBING));
+
+        // The controller must remain usable while the other slot is alive.
+        TEST_ESP_OK(sdmmc_host_init());
+        slot_config.clk = SDMMC_SLOT0_CLK;
+        slot_config.cmd = SDMMC_SLOT0_CMD;
+        slot_config.d0 = SDMMC_SLOT0_D0;
+        TEST_ESP_OK(sdmmc_host_init_slot(SDMMC_HOST_SLOT_0, &slot_config));
+        TEST_ESP_OK(sdmmc_host_deinit_slot(SDMMC_HOST_SLOT_1));
+        TEST_ESP_OK(sdmmc_host_set_card_clk(SDMMC_HOST_SLOT_0, SDMMC_FREQ_PROBING));
+        TEST_ESP_OK(sdmmc_host_deinit_slot(SDMMC_HOST_SLOT_0));
+#else
+        TEST_ESP_OK(sdmmc_host_deinit_slot(SDMMC_HOST_SLOT_1));
+#endif
+    }
+
+    TEST_ESP_OK(sdmmc_host_init());
+    TEST_ESP_OK(sdmmc_host_deinit());
 }
