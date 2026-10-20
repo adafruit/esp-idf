@@ -28,6 +28,7 @@
 #include "esp_private/esp_cache_private.h"
 #include "esp_private/esp_clk_tree_common.h"
 #include "esp_cache.h"
+#include "esp_rom_sys.h"
 
 #if CONFIG_CAM_CTLR_MIPI_CSI_ISR_CACHE_SAFE
 #define CSI_MEM_ALLOC_CAPS   (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
@@ -45,6 +46,15 @@ typedef struct csi_platform_t {
 } csi_platform_t;
 
 static const char *TAG = "CSI";
+
+// CIRCUITPY-CHANGE: how long a forced (mid-frame) stop waits for the in-flight
+// GDMA burst to drain before aborting the channel. Longer than vertical
+// blanking at any reasonable frame rate, so the burst normally completes with
+// the next line.
+#define CSI_DMA_DRAIN_TIMEOUT_US (100 * 1000)
+// CIRCUITPY-CHANGE: how long stop() waits for the current frame to complete so
+// it can stop on a frame boundary. Covers a full frame at >= 5 fps.
+#define CSI_STOP_FRAME_TIMEOUT_US (200 * 1000)
 static csi_platform_t s_platform;
 
 static bool csi_dma_trans_done_callback(dw_gdma_channel_handle_t chan, const dw_gdma_trans_done_event_data_t *event_data, void *user_data);
@@ -237,23 +247,36 @@ esp_err_t esp_cam_new_csi_ctlr(const esp_cam_ctlr_csi_config_t *config, esp_cam_
     dw_gdma_channel_handle_t csi_dma_chan = NULL;
     dw_gdma_channel_alloc_config_t csi_dma_alloc_config = {
         .src = {
-            .block_transfer_type = DW_GDMA_BLOCK_TRANSFER_CONTIGUOUS,
+            .block_transfer_type = DW_GDMA_BLOCK_TRANSFER_LIST,
             .role = DW_GDMA_ROLE_PERIPH_CSI,
             .handshake_type = DW_GDMA_HANDSHAKE_HW,
             .num_outstanding_requests = 5,
             .status_fetch_addr = MIPI_CSI_BRG_MEM_BASE,
         },
         .dst = {
-            .block_transfer_type = DW_GDMA_BLOCK_TRANSFER_CONTIGUOUS,
+            .block_transfer_type = DW_GDMA_BLOCK_TRANSFER_LIST,
             .role = DW_GDMA_ROLE_MEM,
             .handshake_type = DW_GDMA_HANDSHAKE_HW,
             .num_outstanding_requests = 5,
         },
-        .flow_controller = DW_GDMA_FLOW_CTRL_SRC,
+        .flow_controller = DW_GDMA_FLOW_CTRL_SELF,
         .chan_priority = 1,
     };
     ESP_GOTO_ON_ERROR(dw_gdma_new_channel(&csi_dma_alloc_config, &csi_dma_chan), err, TAG, "failed to new dwgdma channel");
     ctlr->dma_chan = csi_dma_chan;
+
+    // CIRCUITPY-CHANGE: use a link-list item for the frame destination, the
+    // same way the DSI DMA does. Rewriting dar0 directly from the completion
+    // ISR doesn't take effect while the channel is still active, which made
+    // the destination advance by one frame per transfer on ESP32-P4.
+    dw_gdma_link_list_config_t link_list_config = {
+        .num_items = 1,
+        .link_type = DW_GDMA_LINKED_LIST_TYPE_SINGLY,
+    };
+    ret = dw_gdma_new_link_list(&link_list_config, &ctlr->dma_link_list);
+    if (ret != ESP_OK) {
+        goto err;
+    }
 
     size_t csi_transfer_size = ctlr->h_res * ctlr->v_res * ctlr->in_bpp / 64;
     ctlr->csi_transfer_size = csi_transfer_size;
@@ -310,6 +333,13 @@ esp_err_t s_del_csi_ctlr(csi_controller_t *ctlr)
 
     if (ctlr->dma_chan) {
         ESP_RETURN_ON_ERROR(dw_gdma_del_channel(ctlr->dma_chan), TAG, "failed to delete dwgdma channel");
+    }
+    if (ctlr->dma_link_list) {
+        esp_err_t err = dw_gdma_del_link_list(ctlr->dma_link_list);
+        if (err != ESP_OK) {
+            return err;
+        }
+        ctlr->dma_link_list = NULL;
     }
     //declaim first, then do free
     ESP_RETURN_ON_ERROR(s_csi_declaim_controller(ctlr), TAG, "declaim processor fail");
@@ -370,15 +400,14 @@ static esp_err_t s_csi_ctlr_get_buffer_length(esp_cam_ctlr_handle_t handle, size
     return ESP_OK;
 }
 
-IRAM_ATTR static bool csi_dma_trans_done_callback(dw_gdma_channel_handle_t chan, const dw_gdma_trans_done_event_data_t *event_data, void *user_data)
+// CIRCUITPY-CHANGE: program the single link-list item for one frame and arm
+// the channel. Using a link list (like the DSI DMA) makes the hardware load
+// the destination at the block boundary. The channel must be idle: it is
+// after a transfer completes, and start() makes sure of it. Writing the
+// channel registers while it is enabled faults on ESP32-P4.
+static esp_err_t csi_lli_program_and_arm(csi_controller_t *ctlr, const esp_cam_ctlr_trans_t *trans)
 {
-    bool need_yield = false;
-    BaseType_t high_task_woken = pdFALSE;
-    csi_controller_t *ctlr = (csi_controller_t *)user_data;
-    bool has_new_trans = false;
-
-    dw_gdma_block_transfer_config_t csi_dma_transfer_config = {};
-    csi_dma_transfer_config = (dw_gdma_block_transfer_config_t) {
+    dw_gdma_block_transfer_config_t config = {
         .src = {
             .addr = MIPI_CSI_BRG_MEM_BASE,
             .burst_mode = DW_GDMA_BURST_MODE_FIXED,
@@ -387,7 +416,7 @@ IRAM_ATTR static bool csi_dma_trans_done_callback(dw_gdma_channel_handle_t chan,
             .width = DW_GDMA_TRANS_WIDTH_64,
         },
         .dst = {
-            .addr = 0,
+            .addr = (uint32_t)trans->buffer,
             .burst_mode = DW_GDMA_BURST_MODE_INCREMENT,
             .burst_items = DW_GDMA_BURST_ITEMS_512,
             .burst_len = 16,
@@ -395,17 +424,54 @@ IRAM_ATTR static bool csi_dma_trans_done_callback(dw_gdma_channel_handle_t chan,
         },
         .size = ctlr->csi_transfer_size,
     };
+    // Runs from the completion ISR too: plain returns, no logging.
+    dw_gdma_lli_handle_t lli = dw_gdma_link_list_get_item(ctlr->dma_link_list, 0);
+    if (lli == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = dw_gdma_lli_config_transfer(lli, &config);
+    if (err != ESP_OK) {
+        return err;
+    }
+    dw_gdma_block_markers_t markers = {
+        .is_valid = true,
+        .is_last = true,
+        .en_trans_done_intr = true,
+    };
+    err = dw_gdma_lli_set_block_markers(lli, markers);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = dw_gdma_channel_use_link_list(ctlr->dma_chan, ctlr->dma_link_list);
+    if (err != ESP_OK) {
+        return err;
+    }
+    return dw_gdma_channel_enable_ctrl(ctlr->dma_chan, true);
+}
+
+IRAM_ATTR static bool csi_dma_trans_done_callback(dw_gdma_channel_handle_t chan, const dw_gdma_trans_done_event_data_t *event_data, void *user_data)
+{
+    bool need_yield = false;
+    BaseType_t high_task_woken = pdFALSE;
+    csi_controller_t *ctlr = (csi_controller_t *)user_data;
+    bool has_new_trans = false;
+
+    // CIRCUITPY-CHANGE: a completion left over from a forced (mid-frame) stop
+    // must not re-arm: the next start() would then program a busy channel,
+    // which faults on ESP32-P4.
+    if (ctlr->csi_fsm != CSI_FSM_STARTED) {
+        return false;
+    }
+
     esp_cam_ctlr_trans_t new_trans = {};
 
     if (ctlr->cbs.on_get_new_trans) {
         need_yield = ctlr->cbs.on_get_new_trans(&(ctlr->base), &new_trans, ctlr->cbs_user_data);
         if (new_trans.buffer && new_trans.buflen >= ctlr->fb_size_in_bytes) {
-            csi_dma_transfer_config.dst.addr = (uint32_t)(new_trans.buffer);
             has_new_trans = true;
         }
     } else if (xQueueReceiveFromISR(ctlr->trans_que, &new_trans, &high_task_woken) == pdTRUE) {
         if (new_trans.buffer && new_trans.buflen >= ctlr->fb_size_in_bytes) {
-            csi_dma_transfer_config.dst.addr = (uint32_t)(new_trans.buffer);
             has_new_trans = true;
         }
     }
@@ -415,7 +481,6 @@ IRAM_ATTR static bool csi_dma_trans_done_callback(dw_gdma_channel_handle_t chan,
             new_trans.buffer = ctlr->backup_buffer;
             new_trans.buflen = ctlr->fb_size_in_bytes;
             ESP_EARLY_LOGD(TAG, "no new buffer or no long enough new buffer, use driver internal buffer");
-            csi_dma_transfer_config.dst.addr = (uint32_t)ctlr->backup_buffer;
         } else {
             assert(false && "no new buffer, and no driver internal buffer");
         }
@@ -426,23 +491,45 @@ IRAM_ATTR static bool csi_dma_trans_done_callback(dw_gdma_channel_handle_t chan,
     (void)ret;
 
     ESP_EARLY_LOGD(TAG, "new_trans.buffer: %p, new_trans.buflen: %d", new_trans.buffer, new_trans.buflen);
-    dw_gdma_channel_config_transfer(chan, &csi_dma_transfer_config);
-    dw_gdma_channel_enable_ctrl(chan, true);
+    // CIRCUITPY-CHANGE: decide under the lock, serialised with start/stop.
+    // When a stop is pending, this is the frame boundary it waits for: don't
+    // re-arm and turn the bridge off right away, before the next frame's data
+    // enters it, so the next start() begins on a whole frame. The frame that
+    // just completed is still reported below. The finished transaction is
+    // swapped out under the lock too: once the fsm leaves STARTED, a start()
+    // on the other core may set ctlr->trans.
+    esp_cam_ctlr_trans_t done;
+    portENTER_CRITICAL_SAFE(&ctlr->spinlock);
+    if (ctlr->csi_fsm != CSI_FSM_STARTED) {
+        // A forced stop raced this completion; it owns the channel now.
+        portEXIT_CRITICAL_SAFE(&ctlr->spinlock);
+        return need_yield;
+    }
+    //ctlr->trans is the transaction saved before dma starts
+    done = ctlr->trans;
+    if (ctlr->stop_pending) {
+        mipi_csi_brg_ll_enable(ctlr->hal.bridge_dev, false);
+        ctlr->stop_pending = false;
+        ctlr->csi_fsm = CSI_FSM_ENABLED;
+        memset(&ctlr->trans, 0x0, sizeof(esp_cam_ctlr_trans_t));
+    } else {
+        esp_err_t arm_ret = csi_lli_program_and_arm(ctlr, &new_trans);
+        assert(arm_ret == ESP_OK);
+        (void)arm_ret;
+        ctlr->trans = new_trans;
+    }
+    portEXIT_CRITICAL_SAFE(&ctlr->spinlock);
 
-    if ((ctlr->trans.buffer != ctlr->backup_buffer) || ctlr->bk_buffer_exposed) {
-        esp_err_t ret = esp_cache_msync((void *)(ctlr->trans.buffer), ctlr->trans.received_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    if ((done.buffer != ctlr->backup_buffer) || ctlr->bk_buffer_exposed) {
+        esp_err_t ret = esp_cache_msync((void *)(done.buffer), done.received_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
         assert(ret == ESP_OK);
         (void)ret;
         assert(ctlr->cbs.on_trans_finished);
         if (ctlr->cbs.on_trans_finished) {
-            ctlr->trans.received_size = ctlr->fb_size_in_bytes;
-            need_yield = ctlr->cbs.on_trans_finished(&(ctlr->base), &ctlr->trans, ctlr->cbs_user_data);
+            done.received_size = ctlr->fb_size_in_bytes;
+            need_yield = ctlr->cbs.on_trans_finished(&(ctlr->base), &done, ctlr->cbs_user_data);
         }
     }
-
-    //ctlr->trans is the transaction saved before dma starts
-    memset(&ctlr->trans, 0x0, sizeof(esp_cam_ctlr_trans_t));
-    ctlr->trans = new_trans;
 
     need_yield |= high_task_woken == pdTRUE;
     return need_yield;
@@ -567,6 +654,20 @@ esp_err_t s_ctlr_csi_start(esp_cam_ctlr_handle_t handle)
 {
     ESP_RETURN_ON_FALSE(handle, ESP_ERR_INVALID_ARG, TAG, "invalid argument");
     csi_controller_t *ctlr = __containerof(handle, csi_controller_t, base);
+
+    // CIRCUITPY-CHANGE: started again before a pending stop reached its frame
+    // boundary: just cancel the stop. The channel keeps running and the next
+    // completion re-arms it at the newest destination (on_get_new_trans).
+    portENTER_CRITICAL_SAFE(&ctlr->spinlock);
+    bool cancelled = ctlr->csi_fsm == CSI_FSM_STARTED && ctlr->stop_pending;
+    if (cancelled) {
+        ctlr->stop_pending = false;
+    }
+    portEXIT_CRITICAL_SAFE(&ctlr->spinlock);
+    if (cancelled) {
+        return ESP_OK;
+    }
+
     ESP_RETURN_ON_FALSE(ctlr->csi_fsm == CSI_FSM_ENABLED, ESP_ERR_INVALID_STATE, TAG, "driver starts already, should not start again");
     ESP_RETURN_ON_FALSE(ctlr->cbs.on_trans_finished, ESP_ERR_INVALID_STATE, TAG, "no on_trans_finished callback registered");
 
@@ -595,30 +696,25 @@ esp_err_t s_ctlr_csi_start(esp_cam_ctlr_handle_t handle)
     ESP_LOGD(TAG, "trans.buffer: %p, trans.buflen: %d", trans.buffer, trans.buflen);
     ctlr->trans = trans;
 
-    portENTER_CRITICAL(&ctlr->spinlock);
-    ctlr->csi_fsm = CSI_FSM_STARTED;
-    portEXIT_CRITICAL(&ctlr->spinlock);
+    // CIRCUITPY-CHANGE: never write the channel registers while it is still
+    // enabled; the GDMA answers with a slave error (store access fault).
+    if (dw_gdma_channel_is_enabled(ctlr->dma_chan)) {
+        esp_err_t err = dw_gdma_channel_disable_sync(ctlr->dma_chan, CSI_DMA_DRAIN_TIMEOUT_US);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
 
-    dw_gdma_block_transfer_config_t csi_dma_transfer_config = {};
-    csi_dma_transfer_config = (dw_gdma_block_transfer_config_t) {
-        .src = {
-            .addr = MIPI_CSI_BRG_MEM_BASE,
-            .burst_mode = DW_GDMA_BURST_MODE_FIXED,
-            .burst_items = DW_GDMA_BURST_ITEMS_512,
-            .burst_len = 16,
-            .width = DW_GDMA_TRANS_WIDTH_64,
-        },
-        .dst = {
-            .addr = (uint32_t)(trans.buffer),
-            .burst_mode = DW_GDMA_BURST_MODE_INCREMENT,
-            .burst_items = DW_GDMA_BURST_ITEMS_512,
-            .burst_len = 16,
-            .width = DW_GDMA_TRANS_WIDTH_64,
-        },
-        .size = ctlr->csi_transfer_size,
-    };
-    ESP_RETURN_ON_ERROR(dw_gdma_channel_config_transfer(ctlr->dma_chan, &csi_dma_transfer_config), TAG, "failed to configure dwgdma transfer");
-    ESP_RETURN_ON_ERROR(dw_gdma_channel_enable_ctrl(ctlr->dma_chan, true), TAG, "failed to enable dwgdma");
+    esp_err_t arm_ret;
+    portENTER_CRITICAL_SAFE(&ctlr->spinlock);
+    arm_ret = csi_lli_program_and_arm(ctlr, &trans);
+    if (arm_ret == ESP_OK) {
+        ctlr->csi_fsm = CSI_FSM_STARTED;
+    }
+    portEXIT_CRITICAL_SAFE(&ctlr->spinlock);
+    if (arm_ret != ESP_OK) {
+        return arm_ret;
+    }
 
     //enable CSI bridge
     mipi_csi_brg_ll_enable(ctlr->hal.bridge_dev, true);
@@ -626,21 +722,67 @@ esp_err_t s_ctlr_csi_start(esp_cam_ctlr_handle_t handle)
     return ESP_OK;
 }
 
+// CIRCUITPY-CHANGE: request a stop at the end of the frame being captured and
+// return right away. The DMA must not stop mid-frame: it counts a fixed frame
+// size, so the rest of an interrupted frame would be left in the bridge and
+// shift every frame after the next start(). The completion ISR finishes the
+// stop at the frame boundary (the frame in flight still lands and is reported
+// through on_trans_finished). start() before then cancels the stop; stop()
+// waits for it.
+esp_err_t esp_cam_ctlr_csi_stop_at_frame_end(esp_cam_ctlr_handle_t handle)
+{
+    if (handle == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    csi_controller_t *ctlr = __containerof(handle, csi_controller_t, base);
+
+    esp_err_t err = ESP_OK;
+    portENTER_CRITICAL_SAFE(&ctlr->spinlock);
+    if (ctlr->csi_fsm == CSI_FSM_STARTED) {
+        ctlr->stop_pending = true;
+    } else {
+        err = ESP_ERR_INVALID_STATE;
+    }
+    portEXIT_CRITICAL_SAFE(&ctlr->spinlock);
+    return err;
+}
+
 esp_err_t s_ctlr_csi_stop(esp_cam_ctlr_handle_t handle)
 {
     ESP_RETURN_ON_FALSE(handle, ESP_ERR_INVALID_ARG, TAG, "invalid argument");
     csi_controller_t *ctlr = __containerof(handle, csi_controller_t, base);
-    ESP_RETURN_ON_FALSE(ctlr->csi_fsm == CSI_FSM_STARTED, ESP_ERR_INVALID_STATE, TAG, "driver isn't started");
 
-    //disable CSI bridge
-    mipi_csi_brg_ll_enable(ctlr->hal.bridge_dev, false);
-    ESP_RETURN_ON_ERROR(dw_gdma_channel_enable_ctrl(ctlr->dma_chan, false), TAG, "failed to disable dwgdma");
+    // CIRCUITPY-CHANGE: stop at a frame boundary (see
+    // esp_cam_ctlr_csi_stop_at_frame_end) and wait for the ISR to finish it.
+    // Not started (including a stop that already completed) is quiet: callers
+    // can't tell whether a background stop has finished yet.
+    if (esp_cam_ctlr_csi_stop_at_frame_end(handle) != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    for (uint32_t waited = 0; ctlr->csi_fsm == CSI_FSM_STARTED && waited < CSI_STOP_FRAME_TIMEOUT_US; waited += 50) {
+        esp_rom_delay_us(50);
+    }
 
-    portENTER_CRITICAL(&ctlr->spinlock);
-    ctlr->csi_fsm = CSI_FSM_ENABLED;
-    portEXIT_CRITICAL(&ctlr->spinlock);
-
-    return ESP_OK;
+    esp_err_t err = ESP_OK;
+    portENTER_CRITICAL_SAFE(&ctlr->spinlock);
+    bool forced = ctlr->csi_fsm == CSI_FSM_STARTED;
+    if (forced) {
+        // Take the channel from the ISR: any later completion sees the fsm
+        // isn't STARTED and leaves it alone.
+        ctlr->csi_fsm = CSI_FSM_ENABLED;
+        ctlr->stop_pending = false;
+    }
+    portEXIT_CRITICAL_SAFE(&ctlr->spinlock);
+    if (forced) {
+        // No frame end (e.g. the sensor stopped streaming). Stop mid-frame:
+        // the DMA *before* the bridge, waiting for it to actually go idle.
+        // Clearing CH_EN only takes effect once the in-flight burst
+        // completes, which never happens with the bridge already off; the
+        // still-enabled channel then faulted the next start().
+        err = dw_gdma_channel_disable_sync(ctlr->dma_chan, CSI_DMA_DRAIN_TIMEOUT_US);
+        mipi_csi_brg_ll_enable(ctlr->hal.bridge_dev, false);
+    }
+    return err;
 }
 
 esp_err_t s_ctlr_csi_receive(esp_cam_ctlr_handle_t handle, esp_cam_ctlr_trans_t *trans, uint32_t timeout_ms)
