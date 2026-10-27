@@ -46,6 +46,11 @@ struct csi_controller_t {
 #endif
     mipi_csi_hal_context_t      hal;                //hal context
     csi_fsm_t                   csi_fsm;            //driver fsm
+    // CIRCUITPY-CHANGE: a stop at the end of the current frame was requested
+    // (esp_cam_ctlr_csi_stop_at_frame_end). The DMA completion ISR finishes
+    // it: it doesn't re-arm, turns the bridge off at the frame boundary and
+    // moves the fsm to CSI_FSM_ENABLED. Protected by spinlock.
+    volatile bool               stop_pending;
     portMUX_TYPE                spinlock;           //spinlock
     cam_ctlr_color_t            in_color_format;    //input color format
     cam_ctlr_color_t            out_color_format;   //output color format
@@ -64,6 +69,7 @@ struct csi_controller_t {
     void                        *cbs_user_data;     //callback userdata
     dw_gdma_channel_handle_t    dma_chan;           //dwgdma channel handle
     size_t                      csi_transfer_size;  //csi transfer size for dwgdma
+    dw_gdma_link_list_handle_t  dma_link_list;      //CIRCUITPY-CHANGE: one-item link list for per-frame destinations
     intr_handle_t               intr_handle;        //csi host error interrupt handle
 #if CONFIG_PM_ENABLE
     esp_pm_lock_handle_t        pm_lock;            //Power management lock

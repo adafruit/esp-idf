@@ -181,6 +181,31 @@ esp_err_t dw_gdma_channel_suspend_ctrl(dw_gdma_channel_handle_t chan, bool enter
 esp_err_t dw_gdma_channel_abort(dw_gdma_channel_handle_t chan);
 
 /**
+ * @brief CIRCUITPY-CHANGE: Check whether the DMA channel is enabled (CH_EN set)
+ *
+ * @note A disable request only takes effect once the in-flight AXI transfer
+ *       completes, so the channel can stay enabled after `dw_gdma_channel_enable_ctrl(false)`.
+ *       Channel registers must not be written while it is enabled: the
+ *       controller answers with a slave error (store access fault).
+ */
+bool dw_gdma_channel_is_enabled(dw_gdma_channel_handle_t chan);
+
+/**
+ * @brief CIRCUITPY-CHANGE: Disable the DMA channel and wait until it is idle
+ *
+ * Requests a graceful disable and polls CH_EN. If the channel doesn't drain
+ * within timeout_us (e.g. a hardware-handshake peer stopped supplying data),
+ * the channel is aborted.
+ *
+ * @note Not for ISR context: it busy-waits.
+ * @return
+ *      - ESP_OK: The channel is disabled
+ *      - ESP_ERR_INVALID_ARG: Invalid argument
+ *      - ESP_ERR_TIMEOUT: The channel is still enabled even after aborting
+ */
+esp_err_t dw_gdma_channel_disable_sync(dw_gdma_channel_handle_t chan, uint32_t timeout_us);
+
+/**
  * @brief Lock the DMA channel at specific transfer level
  *
  * @note When a DMA channel is locked, no other channels are granted control of the master bus for the duration specified by the lock level.

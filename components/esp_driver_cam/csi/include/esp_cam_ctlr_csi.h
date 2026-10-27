@@ -65,6 +65,22 @@ typedef struct {
  */
 esp_err_t esp_cam_new_csi_ctlr(const esp_cam_ctlr_csi_config_t *config, esp_cam_ctlr_handle_t *ret_handle);
 
+/**
+ * @brief CIRCUITPY-CHANGE: Stop the CSI controller at the end of the current frame, without waiting
+ *
+ * The frame being captured still lands (and is reported through on_trans_finished); the
+ * controller stops at that frame boundary from the DMA completion interrupt. Stopping
+ * mid-frame would leave a partial frame in the CSI bridge. Calling esp_cam_ctlr_start()
+ * before the stop completes cancels it; esp_cam_ctlr_stop() waits for it.
+ *
+ * @param[in] handle CSI controller handle
+ * @return
+ *        - ESP_OK                 Stop requested
+ *        - ESP_ERR_INVALID_ARG    Invalid argument
+ *        - ESP_ERR_INVALID_STATE  Not started
+ */
+esp_err_t esp_cam_ctlr_csi_stop_at_frame_end(esp_cam_ctlr_handle_t handle);
+
 #ifdef __cplusplus
 }
 #endif

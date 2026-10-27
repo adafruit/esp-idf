@@ -23,6 +23,7 @@
 #include "esp_check.h"
 #include "esp_intr_alloc.h"
 #include "esp_memory_utils.h"
+#include "esp_rom_sys.h"
 #include "esp_private/periph_ctrl.h"
 #include "esp_private/dw_gdma.h"
 #include "esp_private/critical_section.h"
@@ -322,6 +323,45 @@ esp_err_t dw_gdma_channel_abort(dw_gdma_channel_handle_t chan)
     // the atomic is ensured by the hardware, so no lock is needed here
     dw_gdma_ll_channel_abort(hal->dev, chan_id);
     return ESP_OK;
+}
+
+// CIRCUITPY-CHANGE: report CH_EN so callers can avoid writing channel
+// registers while the channel is still draining a disable request.
+bool dw_gdma_channel_is_enabled(dw_gdma_channel_handle_t chan)
+{
+    if (!chan) {
+        return false;
+    }
+    return (chan->group->hal.dev->chen0.val & (1U << chan->chan_id)) != 0;
+}
+
+// CIRCUITPY-CHANGE: disable a channel and wait for it to actually stop.
+// Clearing CH_EN is only a request; it completes once the in-flight AXI
+// transfer does. If the handshaking peripheral stopped supplying data that
+// never happens, so fall back to aborting (bounded, unlike
+// dw_gdma_ll_channel_abort, whose abort bit never clears on an idle channel).
+esp_err_t dw_gdma_channel_disable_sync(dw_gdma_channel_handle_t chan, uint32_t timeout_us)
+{
+    if (chan == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    dw_gdma_dev_t *dev = chan->group->hal.dev;
+    int chan_id = chan->chan_id;
+    const uint32_t en_mask = 1U << chan_id;
+
+    dw_gdma_ll_channel_enable(dev, chan_id, false);
+    for (uint32_t waited = 0; (dev->chen0.val & en_mask) && waited < timeout_us; waited += 10) {
+        esp_rom_delay_us(10);
+    }
+    if (!(dev->chen0.val & en_mask)) {
+        return ESP_OK;
+    }
+
+    dev->chen1.val = 0x101 << chan_id;
+    for (uint32_t waited = 0; (dev->chen0.val & en_mask) && waited < 1000; waited += 10) {
+        esp_rom_delay_us(10);
+    }
+    return (dev->chen0.val & en_mask) ? ESP_ERR_TIMEOUT : ESP_OK;
 }
 
 esp_err_t dw_gdma_channel_lock(dw_gdma_channel_handle_t chan, dw_gdma_lock_level_t level)
