@@ -87,6 +87,19 @@ static inline void gpio_ll_pullup_en(gpio_dev_t *hw, uint32_t gpio_num)
 }
 
 /**
+  * @brief Check whether software has swapped the two internal USB FSLS PHYs
+  *        (see usb_serial_jtag_ll_phy_select()).
+  *
+  * @return false: USJ on PHY0 (GPIO24/25), USB_WRAP on PHY1 (GPIO26/27), the default.
+  *         true: USJ on PHY1 (GPIO26/27), USB_WRAP on PHY0 (GPIO24/25).
+  */
+__attribute__((always_inline))
+static inline bool gpio_ll_usb_phys_swapped(void)
+{
+    return LP_SYS.usb_ctrl.sw_hw_usb_phy_sel && LP_SYS.usb_ctrl.sw_usb_phy_sel;
+}
+
+/**
   * @brief Disable pull-up on GPIO.
   *
   * @param hw Peripheral GPIO hardware instance address.
@@ -102,11 +115,12 @@ static inline void gpio_ll_pullup_dis(gpio_dev_t *hw, uint32_t gpio_num)
     // TODO: read the specific efuse with efuse_ll.h
 
     // One more noticeable point is P4 has two internal PHYs connecting to USJ and USB_WRAP(OTG1.1) separately.
-    // We only consider the default connection here: PHY0 -> USJ, PHY1 -> USB_OTG
-    if (gpio_num == USB_USJ_INT_PHY_DP_GPIO_NUM) {
+    // By default PHY0 -> USJ, PHY1 -> USB_OTG, but software can swap them.
+    bool swapped = gpio_ll_usb_phys_swapped();
+    if (gpio_num == (swapped ? USB_INT_PHY1_DP_GPIO_NUM : USB_INT_PHY0_DP_GPIO_NUM)) {
         USB_SERIAL_JTAG.conf0.pad_pull_override = 1;
         USB_SERIAL_JTAG.conf0.dp_pullup = 0;
-    } else if (gpio_num == USB_OTG_INT_PHY_DP_GPIO_NUM) {
+    } else if (gpio_num == (swapped ? USB_INT_PHY0_DP_GPIO_NUM : USB_INT_PHY1_DP_GPIO_NUM)) {
         USB_WRAP.otg_conf.pad_pull_override = 1;
         USB_WRAP.otg_conf.dp_pullup = 0;
     }
@@ -692,10 +706,13 @@ static inline void gpio_ll_func_sel(gpio_dev_t *hw, uint8_t gpio_num, uint32_t f
 {
     // Disable USB PHY configuration if pins (24, 25) (26, 27) needs to select an IOMUX function
     // P4 has two internal PHYs connecting to USJ and USB_WRAP(OTG1.1) separately.
-    // We only consider the default connection here: PHY0 -> USJ, PHY1 -> USB_OTG
-    if (gpio_num == USB_USJ_INT_PHY_DM_GPIO_NUM || gpio_num == USB_USJ_INT_PHY_DP_GPIO_NUM) {
+    // By default PHY0 -> USJ, PHY1 -> USB_OTG, but software can swap them.
+    bool phy0 = gpio_num == USB_INT_PHY0_DM_GPIO_NUM || gpio_num == USB_INT_PHY0_DP_GPIO_NUM;
+    bool phy1 = gpio_num == USB_INT_PHY1_DM_GPIO_NUM || gpio_num == USB_INT_PHY1_DP_GPIO_NUM;
+    bool swapped = gpio_ll_usb_phys_swapped();
+    if (swapped ? phy1 : phy0) {
         USB_SERIAL_JTAG.conf0.usb_pad_enable = 0;
-    } else if (gpio_num == USB_OTG_INT_PHY_DM_GPIO_NUM || gpio_num == USB_OTG_INT_PHY_DP_GPIO_NUM) {
+    } else if (swapped ? phy0 : phy1) {
         USB_WRAP.otg_conf.usb_pad_enable = 0;
     }
     IO_MUX.gpio[gpio_num].mcu_sel = func;
