@@ -409,6 +409,15 @@ static void esp_lcd_dpi_panel_get_frame_buffer_v(esp_lcd_dpi_panel_t *dpi_panel,
     }
 }
 
+esp_err_t esp_lcd_dpi_panel_get_pixel_clock(esp_lcd_panel_handle_t panel, float *pixel_clock_mhz)
+{
+    ESP_RETURN_ON_FALSE(panel && pixel_clock_mhz, ESP_ERR_INVALID_ARG, TAG, "invalid argument");
+    esp_lcd_dpi_panel_t *dpi_panel = __containerof(panel, esp_lcd_dpi_panel_t, base);
+    // mipi_dsi_hal_host_dpi_calculate_divider() records the real clock
+    *pixel_clock_mhz = dpi_panel->bus->hal.real_dpi_clock_freq_mhz;
+    return ESP_OK;
+}
+
 esp_err_t esp_lcd_dpi_panel_get_frame_buffer(esp_lcd_panel_handle_t panel, uint32_t fb_num, void **fb0, ...)
 {
     ESP_RETURN_ON_FALSE(panel, ESP_ERR_INVALID_ARG, TAG, "invalid argument");

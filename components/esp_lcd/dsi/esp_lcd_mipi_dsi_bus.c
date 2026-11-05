@@ -138,6 +138,14 @@ err:
     return ret;
 }
 
+esp_err_t esp_lcd_dsi_bus_get_lane_bit_rate(esp_lcd_dsi_bus_handle_t bus, float *lane_bit_rate_mbps)
+{
+    ESP_RETURN_ON_FALSE(bus && lane_bit_rate_mbps, ESP_ERR_INVALID_ARG, TAG, "invalid argument");
+    // mipi_dsi_hal_configure_phy_pll() replaces the requested rate with the real one
+    *lane_bit_rate_mbps = bus->hal.lane_bit_rate_mbps;
+    return ESP_OK;
+}
+
 esp_err_t esp_lcd_del_dsi_bus(esp_lcd_dsi_bus_handle_t bus)
 {
     ESP_RETURN_ON_FALSE(bus, ESP_ERR_INVALID_ARG, TAG, "invalid argument");

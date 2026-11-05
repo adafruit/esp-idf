@@ -57,6 +57,19 @@ esp_err_t esp_lcd_new_dsi_bus(const esp_lcd_dsi_bus_config_t *bus_config, esp_lc
 esp_err_t esp_lcd_del_dsi_bus(esp_lcd_dsi_bus_handle_t bus);
 
 /**
+ * @brief Get the lane bit rate that the DSI PHY PLL actually generates
+ *
+ * @note The PHY PLL can only generate certain rates, so this can differ from `esp_lcd_dsi_bus_config_t::lane_bit_rate_mbps`.
+ *
+ * @param[in] bus MIPI DSI bus handle, returned from `esp_lcd_new_dsi_bus`
+ * @param[out] lane_bit_rate_mbps Returned lane bit rate in Mbps
+ * @return
+ *      - ESP_OK: Get the lane bit rate successfully
+ *      - ESP_ERR_INVALID_ARG: Get the lane bit rate failed because of invalid argument
+ */
+esp_err_t esp_lcd_dsi_bus_get_lane_bit_rate(esp_lcd_dsi_bus_handle_t bus, float *lane_bit_rate_mbps);
+
+/**
  * @brief Panel IO configuration structure, for MIPI DSI command interface
  */
 typedef struct {
@@ -128,6 +141,19 @@ esp_err_t esp_lcd_new_panel_dpi(esp_lcd_dsi_bus_handle_t bus, const esp_lcd_dpi_
  *      - ESP_OK: Get frame buffer address successfully
  */
 esp_err_t esp_lcd_dpi_panel_get_frame_buffer(esp_lcd_panel_handle_t dpi_panel, uint32_t fb_num, void **fb0, ...);
+
+/**
+ * @brief Get the DPI pixel clock frequency that the driver actually generates
+ *
+ * @note The DPI clock comes from an integer division of the clock source, so this can differ from `esp_lcd_dpi_panel_config_t::dpi_clock_freq_mhz`.
+ *
+ * @param[in] dpi_panel MIPI DPI panel handle, returned from esp_lcd_new_panel_dpi()
+ * @param[out] pixel_clock_mhz Returned pixel clock frequency in MHz
+ * @return
+ *      - ESP_ERR_INVALID_ARG: Get the pixel clock failed because of invalid argument
+ *      - ESP_OK: Get the pixel clock successfully
+ */
+esp_err_t esp_lcd_dpi_panel_get_pixel_clock(esp_lcd_panel_handle_t dpi_panel, float *pixel_clock_mhz);
 
 /**
  * @brief Set pre-defined pattern to the screen for testing or debugging purpose
