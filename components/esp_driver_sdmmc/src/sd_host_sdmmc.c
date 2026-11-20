@@ -437,6 +437,7 @@ static esp_err_t sd_host_del_sdmmc_controller(sd_host_ctlr_handle_t ctlr)
 #endif
 
     if (ctlr_ctx->mutex) {
+        xSemaphoreGive(ctlr_ctx->mutex);
         vSemaphoreDeleteWithCaps(ctlr_ctx->mutex);
     }
 
